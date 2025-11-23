@@ -12,8 +12,6 @@ from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
 
-load_dotenv()
-
 app = FastAPI(title="Halfsy API")
 
 # CORS middleware to allow frontend to access the API

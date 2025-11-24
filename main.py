@@ -11,6 +11,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
+from fastapi import BackgroundTasks
+
 
 app = FastAPI(title="Halfsy API")
 
@@ -208,7 +210,7 @@ def send_outlook_notification(email: str, message: str):
 
 
 @app.post("/api/contact")
-def submit_contact_form(contact: ContactForm):
+def submit_contact_form(contact: ContactForm, background_tasks: BackgroundTasks):
     """
     Handle contact form submission
     - Store in MongoDB
@@ -228,9 +230,9 @@ def submit_contact_form(contact: ContactForm):
         # Store in MongoDB
         result = messages_collection.insert_one(contact_doc)
         
-        # Send email notification (non-blocking - don't fail if email fails)
-        send_outlook_notification(contact.email, contact.message)
-        
+        # Run email in background
+        background_tasks.add_task(send_outlook_notification, contact.email, contact.message)
+      
         return {
             "success": True,
             "message": "Thank you for contacting us! We'll get back to you soon.",

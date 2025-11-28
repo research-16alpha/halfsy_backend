@@ -134,7 +134,10 @@ def get_products(
     skip = (page - 1) * limit
 
     # Base Mongo query (MATCH)
-    query = {}
+    query = {
+    "product_image": {"$exists": True, "$type": "string", "$ne": ""}
+    }
+    
     if brand:
         query["brand_name"] = brand
 

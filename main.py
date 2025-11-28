@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 from pymongo import MongoClient
 from bson import ObjectId
 from typing import List, Optional
@@ -11,8 +11,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
-from fastapi import BackgroundTasks
+import math
 
+load_dotenv()
 
 app = FastAPI(title="Halfsy API")
 
@@ -26,6 +27,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # MongoDB connection
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -117,52 +119,93 @@ def get_top_deals(limit: int = 4):
         except Exception as fallback_error:
             raise HTTPException(status_code=500, detail=f"Error fetching top deals: {str(e)}")
 
-
 @app.get("/api/products")
-def get_products(limit: int = 100, skip: int = 0):
-    """
-    Fetch products from MongoDB with pagination
-    - limit: Number of products to return (default: 100)
-    - skip: Number of products to skip (default: 0)
-    """
-    if products_collection is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
-    
-    try:
-        # Get total count
-        total_count = products_collection.count_documents({})
-        
-        # Get paginated products
-        products = list(products_collection.find({}, {"_id": 0}).skip(skip).limit(limit))
-        
-        return {
-            "products": products,
-            "total": total_count,
-            "limit": limit,
-            "skip": skip,
-            "has_more": (skip + limit) < total_count
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching products: {str(e)}")
+def get_products(
+    page: int = 1,
+    limit: int = 100,
+    brand: str | None = None,
+    min_discount: str | None = None,
+    sort_by: str | None = None,
+    sort_order: str = "asc"
+):
+    if page < 1:
+        raise HTTPException(400, "Page must be >= 1")
 
+    skip = (page - 1) * limit
 
-@app.get("/api/products/{product_id}")
-def get_product(product_id: str):
-    """
-    Fetch a single product by ID
-    """
-    if products_collection is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
-    
-    try:
-        product = products_collection.find_one({"_id": ObjectId(product_id)}, {"_id": 0})
-        if product:
-            return product
-        raise HTTPException(status_code=404, detail="Product not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching product: {str(e)}")
+    # Base Mongo query (MATCH)
+    query = {}
+    if brand:
+        query["brand_name"] = brand
+
+    if min_discount not in (None, ""):
+        try:
+            query["discount"] = {"$gte": int(min_discount)}
+        except:
+            pass
+
+    PRIORITY_BRANDS = ["Brunello Cucinelli", "Brioni", "Zimmermann"]
+
+    # Build aggregation pipeline
+    pipeline = []
+
+    # MATCH stage
+    pipeline.append({"$match": query})
+
+    # Add brand_priority field ONLY when brand filter is not applied
+    if not brand:
+        pipeline.append({
+            "$addFields": {
+                "brand_priority": {
+                    "$cond": [
+                        {"$in": ["$brand_name", PRIORITY_BRANDS]},
+                        0,   # priority bucket
+                        1    # normal bucket
+                    ]
+                }
+            }
+        })
+    else:
+        # If brand filter present, set all to same bucket
+        pipeline.append({"$addFields": {"brand_priority": 1}})
+
+    # SORT stage
+    sort_stage = {
+        "brand_priority": 1,   # priority brands first
+        "scraped_at": -1       # newest first ALWAYS
+    }
+
+    if sort_by:
+        order = 1 if sort_order == "asc" else -1
+        sort_stage[sort_by] = order
+
+    pipeline.append({"$sort": sort_stage})
+
+    # PAGINATION
+    pipeline.append({"$skip": skip})
+    pipeline.append({"$limit": limit})
+
+    pipeline.append({
+    "$project": {
+        "_id": 0
+    }
+    })
+
+    # Get total count separately
+    total_products = products_collection.count_documents(query)
+
+    # Get documents
+    products = list(products_collection.aggregate(pipeline))
+
+    return {
+        "products": products,
+        "total_products": total_products,
+        "limit": limit,
+        "page": page,
+        "total_pages": math.ceil(total_products / limit),
+        "has_more": (skip + limit) < total_products
+    }
+
 
 
 def send_outlook_notification(email: str, message: str):
@@ -210,7 +253,7 @@ def send_outlook_notification(email: str, message: str):
 
 
 @app.post("/api/contact")
-def submit_contact_form(contact: ContactForm, background_tasks: BackgroundTasks):
+def submit_contact_form(contact: ContactForm):
     """
     Handle contact form submission
     - Store in MongoDB
@@ -230,9 +273,9 @@ def submit_contact_form(contact: ContactForm, background_tasks: BackgroundTasks)
         # Store in MongoDB
         result = messages_collection.insert_one(contact_doc)
         
-        # Run email in background
-        background_tasks.add_task(send_outlook_notification, contact.email, contact.message)
-      
+        # Send email notification (non-blocking - don't fail if email fails)
+        send_outlook_notification(contact.email, contact.message)
+        
         return {
             "success": True,
             "message": "Thank you for contacting us! We'll get back to you soon.",
@@ -241,3 +284,17 @@ def submit_contact_form(contact: ContactForm, background_tasks: BackgroundTasks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing contact form: {str(e)}")
 
+
+@app.get("/api/brands")
+def get_brands():
+    """
+    Fetch all brands from MongoDB
+    """
+    if products_collection is None:
+        raise HTTPException(status_code=500, detail="Database connection not available")
+    
+    try:
+        brands = list(products_collection.distinct("brand_name"))
+        return {"brands": brands}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching brands: {str(e)}")

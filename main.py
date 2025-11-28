@@ -172,7 +172,7 @@ def get_products(
     # SORT stage
     sort_stage = {
         "brand_priority": 1,   # priority brands first
-        "scraped_at": -1       # newest first ALWAYS
+        # "scraped_at": -1       # newest first ALWAYS
     }
 
     if sort_by:
